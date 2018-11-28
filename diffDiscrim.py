@@ -162,16 +162,21 @@ class DiffDiscrim(object):
                                                    feed_dict={ self.iter_handle: data_handle })
                 except tf.errors.OutOfRangeError:
                     print("INFO: Done with all steps")
-                    self.save(self.checkpoint_dir, globalCounter)
+                    self.save(self.checkpoint_dir, globalCounter, args.DATA_id)
                     break
 
                 self.writer.add_summary(summary_str, globalCounter-1)
                 print("Step: [%2d] rate: %4.4f steps/sec, d_loss: %.8f" \
                     % (globalCounter*args.batch_size,args.batch_size*localCounter/(time.time() - start_time), d_l))
                 stdout.flush()
+                tmp = self.validation(args, out=True, loaded=True)
+                mean_val_D, mean_val_D_ = np.mean(tmp, axis=0)
+                absErr = 1-mean_val_D+mean_val_D_
+                print("Mean Validation: Same: %f \t Diff: %f \t Abs: %f" % (mean_val_D,mean_val_D_,absErr))
 
-                mean_val_D, mean_val_D_ = self.validation(args, out=True, loaded=True)
-                print("Mean Validation: Same: %f \t Diff: %f \t Abs: %f" % (mean_val_D,mean_val_D_,1-mean_val_D+mean_val_D_))
+                abs_err = tf.Summary(value=[tf.Summary.Value(tag='Absolute Validation Error',
+                                            simple_value=absErr)])
+                self.writer.add_summary(abs_err, globalCounter*args.batch_size)
                 stdout.flush()
                 start_time = time.time()
                 localCounter = 1
@@ -185,7 +190,7 @@ class DiffDiscrim(object):
             globalCounter += 1
             localCounter += 1
 
-        self.validation(args, loaded=True)
+        return self.validation(args, loaded=True)
 
     def validation(self, args, out=False, loaded=False):
         if not loaded:
@@ -195,12 +200,12 @@ class DiffDiscrim(object):
                 print(" [!] Load failed...")
                 raise ValueError('Could not load checkpoint and that is needed for validation')
         args.batch_size=1
-        input_data = self.data.get_validation_set()
+        input_data, num_validation = self.data.get_validation_set()
         data_iterator = input_data.repeat(1).batch(1).make_one_shot_iterator()
         data_handle = self.sess.run(data_iterator.string_handle())
         counter = 1
         start_time = time.time()
-        pred_array = np.zeros((15,2))
+        pred_array = np.zeros((num_validation,2))
         while True:
             try:
                 D, D_ = self.sess.run([self.D, self.D_],
@@ -212,7 +217,34 @@ class DiffDiscrim(object):
                 break
 
             counter += 1
-        return np.mean(pred_array, axis=0)
+        return pred_array
+
+    def predict(self, args, inputImage, ganImage):
+        """ Predict similarity between images """
+        pred_array = np.zeros(len(inputImage))
+        counter = 0
+        # Check that a checkpoint directory is given, to load from
+        assert(args.checkpoint is not None)
+        self.load(os.path.join(args.EXP_OUT,str(args.checkpoint)))
+
+        if not os.path.exists(os.path.join(args.file_output_dir,str(args.checkpoint))):
+            os.makedirs(os.path.join(args.file_output_dir,str(args.checkpoint)))
+
+        img_w=args.input_image_size
+        img_h=args.input_image_size
+
+        for image in inputImage:
+            data = {'labels': tf.to_float(image), 'pos': tf.to_float(ganImage[counter,:,:]), 'neg': tf.zeros_like(ganImage[counter,:,:]) }
+
+            iterator = tf.data.Dataset.from_tensor_slices(data)\
+                       .batch(1).make_one_shot_iterator()
+            handle = self.sess.run(iterator.string_handle())
+
+            similarity_grid = self.sess.run(self.D, feed_dict={self.iter_handle: handle})
+
+            filename = "simGrid_"+str(counter)+".png"
+            cv2.imwrite(os.path.join(args.file_output_dir,str(args.checkpoint),filename), cv2.resize(255*similarity_grid[0,:,:,0],(args.input_image_size,args.input_image_size),interpolation=cv2.INTER_NEAREST))
+
 
     def discriminator(self, image, y=None, reuse=False):
         # image is 256 x 256 x (input_c_dim + input_c_dim)
@@ -232,8 +264,8 @@ class DiffDiscrim(object):
 
             return tf.nn.sigmoid(h2), h2
 
-    def save(self, checkpoint_dir, step):
-        model_name = "diffDiscrim.model"
+    def save(self, checkpoint_dir, step, id):
+        model_name = "diffDiscrim"+id+".model"
         # model_dir = "%s_%s_%s" % (self.dataset_name, self.batch_size, self.output_size)
         # checkpoint_dir = os.path.join(self.checkpoint_dir, model_dir)
 

@@ -14,6 +14,7 @@ import sacred as sc
 import shutil
 from sacred.utils import apply_backspaces_and_linefeeds
 import tensorflow as tf
+import numpy as np
 
 class Helper:
     name = 'A'
@@ -70,11 +71,18 @@ def main(dataset, net_config, _run):
         # data = Cityscapes_generated(base_path="/Users/David/masterThesis/pix2pix-tensorflow/dir/224_full")
         data = get_dataset(dataset['name'])
         data = data(a.image_input_dir)
+        data_id=a.image_input_dir.split('/')[-1].split('_')[0]
+        setattr(a,'DATA_id',data_id)
         model=DiffDiscrim(sess=sess, image_size=a.input_image_size,
                      batch_size=a.batch_size, df_dim=a.ndf,
                      input_c_dim=3,
                      checkpoint_dir=output_dir, data=data, momentum=a.batch_momentum)
-        model.train(a)
+        if a.mode == "train":
+            tmp = model.train(a)
+            _run.info['predictions'] = tmp
+            _run.info['mean_predictions'] = np.mean(tmp, axis=0)
+        elif a.mode == "predict":
+            model.predict(a)
 
 if __name__ == '__main__':
     ex.run_commandline()
