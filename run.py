@@ -12,6 +12,7 @@ from diffDiscrim import DiffDiscrim
 import os
 import sacred as sc
 import shutil
+import glob
 from sacred.utils import apply_backspaces_and_linefeeds
 import tensorflow as tf
 import numpy as np
@@ -82,7 +83,13 @@ def main(dataset, net_config, _run):
             _run.info['predictions'] = tmp
             _run.info['mean_predictions'] = np.mean(tmp, axis=0)
         elif a.mode == "predict":
-            model.predict(a)
+            input_list = glob.glob(os.path.join(a.predict_dir,"target_*.png"))
+            synth_list = glob.glob(os.path.join(a.predict_dir,"synth_*.png"))
+
+            input_list.sort()
+            synth_list.sort()
+
+            model.predict(a,input_list,synth_list)
 
 if __name__ == '__main__':
     ex.run_commandline()

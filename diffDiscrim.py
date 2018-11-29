@@ -6,6 +6,7 @@ import sys
 from sys import stdout
 import os
 import time
+import cv2
 
 from tensorflow.python.framework import ops
 
@@ -221,8 +222,8 @@ class DiffDiscrim(object):
 
     def predict(self, args, inputImage, ganImage):
         """ Predict similarity between images """
-        pred_array = np.zeros(len(inputImage))
-        counter = 0
+        pred_array = np.zeros((len(inputImage),2))
+        counter = 1
         # Check that a checkpoint directory is given, to load from
         assert(args.checkpoint is not None)
         self.load(os.path.join(args.EXP_OUT,str(args.checkpoint)))
@@ -233,8 +234,13 @@ class DiffDiscrim(object):
         img_w=args.input_image_size
         img_h=args.input_image_size
 
-        for image in inputImage:
-            data = {'labels': tf.to_float(image), 'pos': tf.to_float(ganImage[counter,:,:]), 'neg': tf.zeros_like(ganImage[counter,:,:]) }
+        for image_path in inputImage:
+
+            input = np.expand_dims(cv2.imread(image_path), axis=0)
+            synth = np.expand_dims(cv2.imread(ganImage[counter-1]), axis=0)
+
+            # data = {'labels': tf.to_float(input), 'pos': tf.to_float(synth), 'neg': tf.zeros_like(tf.to_float(synth)) }
+            data = {'labels': tf.to_float(input), 'pos': tf.to_float(synth), 'neg': tf.zeros_like(tf.to_float(synth)) }
 
             iterator = tf.data.Dataset.from_tensor_slices(data)\
                        .batch(1).make_one_shot_iterator()
@@ -242,9 +248,15 @@ class DiffDiscrim(object):
 
             similarity_grid = self.sess.run(self.D, feed_dict={self.iter_handle: handle})
 
+            pred_array[counter-1,:] = [counter, np.mean(similarity_grid)]
+
             filename = "simGrid_"+str(counter)+".png"
             cv2.imwrite(os.path.join(args.file_output_dir,str(args.checkpoint),filename), cv2.resize(255*similarity_grid[0,:,:,0],(args.input_image_size,args.input_image_size),interpolation=cv2.INTER_NEAREST))
-
+            counter += 1
+        # np.set_printoptions(precision=3)
+        for i in range(len(inputImage)):
+            print("%d. \t %f" % (pred_array[i,0],pred_array[i,1]))
+            # print(pred_array)
 
     def discriminator(self, image, y=None, reuse=False):
         # image is 256 x 256 x (input_c_dim + input_c_dim)
