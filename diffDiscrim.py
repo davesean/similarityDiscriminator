@@ -50,6 +50,20 @@ def conv2d(input_, output_dim,
 
         return conv
 
+def maxPool2d(input_,
+           k_h=4, k_w=4, d_h=2, d_w=2,
+           name="maxpool2d",pad="SAME"):
+           return tf.layers.max_pooling2d(inputs=input_, pool_size=[k_h,k_w], strides=[d_h,d_w], padding=pad)
+
+def dense(input_, output_size, num_channels, name="dense", reuse=False, stddev=0.02, bias_start=0.0):
+    shape = 16 * 16 * num_channels
+    with tf.variable_scope(name):
+        matrix = tf.get_variable("Matrix", [shape, output_size], tf.float32,
+                                 tf.random_normal_initializer(stddev=stddev))
+        bias = tf.get_variable("bias", [output_size],
+            initializer=tf.constant_initializer(bias_start))
+        return tf.matmul(tf.layers.flatten(input_), matrix) + bias
+
 class DiffDiscrim(object):
     def __init__(self, sess, image_size=256,
                  batch_size=1, df_dim=16,
@@ -72,7 +86,7 @@ class DiffDiscrim(object):
 
         # batch normalization : deals with poor initialization helps gradient flow
         self.d_bn1 = batch_norm(name='d_bn1', momentum=momentum)
-        # self.d_bn2 = batch_norm(name='d_bn2', momentum=momentum)
+        self.d_bn2 = batch_norm(name='d_bn2', momentum=momentum)
         # self.d_bn3 = batch_norm(name='d_bn3', momentum=momentum)
 
 
@@ -94,19 +108,20 @@ class DiffDiscrim(object):
         training_batch = iterator.get_next()
 
         # self.build_model(training_batch['labels'], training_batch['rgb'])
-        self.build_model(training_batch['labels'],training_batch['pos'],training_batch['neg'])
+        self.build_model(training_batch['labels'],training_batch['pos'],training_batch['neg'],training_batch['pos_segm'],training_batch['neg_segm'])
 
-    def build_model(self, target, pos, neg):
-        # TODO check if preprocess to -1 1 is necessary
+    def build_model(self, target, pos, neg, pos_segm, neg_segm):
         self.target_placeholder = preprocess(target)
         self.pos_placeholder = preprocess(pos)
         self.neg_placeholder = preprocess(neg)
+        self.pos_segm_placeholder = preprocess(pos_segm)
+        self.neg_segm_placeholder = preprocess(neg_segm)
 
-        PosExample = tf.concat([self.target_placeholder, self.pos_placeholder], 3)
-        NegExample = tf.concat([self.target_placeholder, self.neg_placeholder], 3)
+        PosExample = tf.concat([self.target_placeholder, self.pos_placeholder, self.pos_segm_placeholder], 3)
+        NegExample = tf.concat([self.target_placeholder, self.neg_placeholder, self.neg_segm_placeholder], 3)
 
-        self.D, self.D_logits = self.discriminator(PosExample)
-        self.D_, self.D_logits_ = self.discriminator(NegExample,reuse=True)
+        self.D, self.D_logits = self.discriminator2(PosExample)
+        self.D_, self.D_logits_ = self.discriminator2(NegExample,reuse=True)
 
         self.d_loss_pos = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits, labels=tf.ones_like(self.D)))
         self.d_loss_neg = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_, labels=tf.zeros_like(self.D_)))
@@ -186,7 +201,7 @@ class DiffDiscrim(object):
                     self.sess.run(d_optim,feed_dict={ self.iter_handle: data_handle })
                 except tf.errors.OutOfRangeError:
                     print("INFO: Done with all training steps")
-                    self.save(self.checkpoint_dir, globalCounter)
+                    self.save(self.checkpoint_dir, globalCounter, args.DATA_id)
                     break
             globalCounter += 1
             localCounter += 1
@@ -220,7 +235,7 @@ class DiffDiscrim(object):
             counter += 1
         return pred_array
 
-    def predict(self, args, inputImage, ganImage):
+    def predict(self, args, inputImage, ganImage, segmImage):
         """ Predict similarity between images """
         pred_array = np.zeros((len(inputImage),2))
         counter = 1
@@ -238,9 +253,10 @@ class DiffDiscrim(object):
 
             input = np.expand_dims(cv2.imread(image_path), axis=0)
             synth = np.expand_dims(cv2.imread(ganImage[counter-1]), axis=0)
+            segm = np.expand_dims(cv2.imread(segmImage[counter-1]), axis=0)
 
             # data = {'labels': tf.to_float(input), 'pos': tf.to_float(synth), 'neg': tf.zeros_like(tf.to_float(synth)) }
-            data = {'labels': tf.to_float(input), 'pos': tf.to_float(synth), 'neg': tf.zeros_like(tf.to_float(synth)) }
+            data = {'labels': tf.to_float(input), 'pos': tf.to_float(synth), 'neg': tf.zeros_like(tf.to_float(synth)),'pos_segm': tf.to_float(segm), 'neg_segm': tf.zeros_like(tf.to_float(segm)) }
 
             iterator = tf.data.Dataset.from_tensor_slices(data)\
                        .batch(1).make_one_shot_iterator()
@@ -254,9 +270,14 @@ class DiffDiscrim(object):
             cv2.imwrite(os.path.join(args.file_output_dir,str(args.checkpoint),filename), cv2.resize(255*similarity_grid[0,:,:,0],(args.input_image_size,args.input_image_size),interpolation=cv2.INTER_NEAREST))
             counter += 1
         # np.set_printoptions(precision=3)
+
+        txt_path = os.path.join(args.file_output_dir,str(args.checkpoint),"pred.txt")
+        text_file = open(txt_path,'w')
         for i in range(len(inputImage)):
             print("%d. \t %f" % (pred_array[i,0],pred_array[i,1]))
+            text_file.write("%d. \t %f \n" % (pred_array[i,0],pred_array[i,1]))
             # print(pred_array)
+        text_file.close()
 
     def discriminator(self, image, y=None, reuse=False):
         # image is 256 x 256 x (input_c_dim + input_c_dim)
@@ -271,10 +292,32 @@ class DiffDiscrim(object):
             h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim*2, k_h=4, k_w=4, d_h=4, d_w=4, name='d_h1_conv')))
             # h1 is (16 x 16 x self.df_dim*2)
             h2 = conv2d(h1, 1, k_h=2, k_w=2, d_h=2, d_w=2, name='d_h2_conv')
-            # h2 is (30 x 30 x 1)
+            # h2 is (8 x 8 x 1)
             # print(h2.shape)
 
             return tf.nn.sigmoid(h2), h2
+
+    def discriminator2(self, image, y=None, reuse=False):
+        # image is 256 x 256 x (input_c_dim + input_c_dim)
+        with tf.variable_scope("discriminator") as scope:
+            if reuse:
+                tf.get_variable_scope().reuse_variables()
+            else:
+                assert tf.get_variable_scope().reuse == False
+
+            h0 = lrelu(conv2d(image, self.df_dim, k_h=1, k_w=1, d_h=1, d_w=1, name='d_h0_conv'))
+            # h0 is (256 x 256 x self.df_dim)
+            h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim*2, k_h=4, k_w=4, d_h=4, d_w=4, name='d_h1_conv')))
+            # h1 is (64 x 64 x self.df_dim*2)
+            h2 = maxPool2d(input_=h1, k_h=2, k_w=2, d_h=2, d_w=2, name="d_h2_maxpool2d")
+            # h2 is (32 x 32 x self.df_dim*2)
+            h3 = lrelu(self.d_bn2(conv2d(h2, self.df_dim*3, k_h=2, k_w=2, d_h=2, d_w=2, name='d_h3_conv')))
+            # h3 is (16 x 16 x self.df_dim*3)
+            h4 = conv2d(h3, 1, k_h=2, k_w=2, d_h=2, d_w=2, name='d_h4_conv')
+            # h4 is (8 x 8 x 1)
+            # print(h2.shape)
+
+            return tf.nn.sigmoid(h4), h4
 
     def save(self, checkpoint_dir, step, id):
         model_name = "diffDiscrim"+id+".model"

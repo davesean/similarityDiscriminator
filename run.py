@@ -85,11 +85,13 @@ def main(dataset, net_config, _run):
         elif a.mode == "predict":
             input_list = glob.glob(os.path.join(a.predict_dir,"target_*.png"))
             synth_list = glob.glob(os.path.join(a.predict_dir,"synth_*.png"))
+            segm_list = glob.glob(os.path.join(a.predict_dir,"input_*.png"))
 
             input_list.sort()
             synth_list.sort()
+            segm_list.sort()
 
-            model.predict(a,input_list,synth_list)
+            model.predict(a,input_list,synth_list,segm_list)
 
 if __name__ == '__main__':
     ex.run_commandline()
