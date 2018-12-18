@@ -71,13 +71,16 @@ def main(dataset, net_config, _run):
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
         # data = Cityscapes_generated(base_path="/Users/David/masterThesis/pix2pix-tensorflow/dir/224_full")
         data = get_dataset(dataset['name'])
-        data = data(a.image_input_dir)
-        data_id=a.image_input_dir.split('/')[-1].split('_')[0]
+        # data = data(dataset['image_input_dir'], ppd=dataset['ppd'])
+        data = data(dataset['image_input_dir'],**dataset)
+        data_id=dataset['image_input_dir'].split('/')[-1].split('_')[0]
         setattr(a,'DATA_id',data_id)
         model=DiffDiscrim(sess=sess, image_size=a.input_image_size,
                      batch_size=a.batch_size, df_dim=a.ndf,
                      input_c_dim=3,
-                     checkpoint_dir=output_dir, data=data, momentum=a.batch_momentum)
+                     checkpoint_dir=output_dir, data=data,
+                     momentum=a.batch_momentum,
+                     checkpoint=os.path.join(a.EXP_OUT,str(net_config['checkpoint'])))
         if a.mode == "train":
             tmp = model.train(a)
             _run.info['predictions'] = tmp
@@ -87,9 +90,9 @@ def main(dataset, net_config, _run):
             synth_list = glob.glob(os.path.join(a.predict_dir,"synth_*.png"))
             segm_list = glob.glob(os.path.join(a.predict_dir,"input_*.png"))
 
-            input_list.sort()
-            synth_list.sort()
-            segm_list.sort()
+            input_list.sort(key=lambda x: int(x.partition('_')[-1].partition('.')[0]))
+            synth_list.sort(key=lambda x: int(x.partition('_')[-1].partition('.')[0]))
+            segm_list.sort(key=lambda x: int(x.partition('_')[-1].partition('.')[0]))
 
             model.predict(a,input_list,synth_list,segm_list)
 
